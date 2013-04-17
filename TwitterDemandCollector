@@ -1,0 +1,532 @@
+#!/usr/bin/env python
+import optparse
+import os
+import platform
+import sys
+import codecs
+import sqlite3
+import json
+import datetime
+from dateutil.parser import parse
+from tweepy.streaming import StreamListener
+from tweepy import OAuthHandler
+from tweepy import Stream
+import locale
+import csv
+import pprint
+import threading
+import logging
+from ConfigParser import *
+
+config = ConfigParser()
+settingsFile = os.path.abspath(os.path.expanduser("settings.cfg"))
+config.read(settingsFile)
+
+if not config.has_section('twitter'):
+	config.add_section('twitter')
+
+if not config.has_section('db'):
+	config.add_section('db')
+
+
+dbFile = os.path.abspath(os.path.expanduser('tweets.db'));
+
+stopStreamBool = False
+consumer_key=""
+consumer_secret=""
+access_token=""
+access_token_secret=""
+
+for section in config.sections():
+	for option in config.options(section):
+		if option == 'consumer_key' and section=='twitter':
+			consumer_key = config.get(section, option)
+		elif option == 'consumer_secret' and section=='twitter':
+			consumer_secret = config.get(section, option)
+		elif option == 'access_token' and section=='twitter':
+			access_token = config.get(section, option)
+		elif option == 'access_token_secret' and section=='twitter':
+			access_token_secret = config.get(section, option)
+		elif option == 'database_file' and section=='db':
+			dbFile = config.get(section, option)
+
+
+def isReturnFile(myfile):
+	if os.path.abspath(os.path.expanduser(myfile.strip())) != False:
+		return os.path.abspath(os.path.expanduser(myfile.strip()))
+	else:
+		return False
+
+logging.basicConfig(filename='error.log',level=logging.DEBUG)
+
+locale.setlocale(locale.LC_ALL, '')
+
+if locale.getlocale()[0]==None:
+	locale.setlocale(locale.LC_ALL, 'en_US')
+
+def checkData(dictf):
+	keystocheck = ['user','created_at','text','retweeted','retweet_count','id','place','in_reply_to_status_id']
+	for key in keystocheck:
+		if key not in dictf:
+			return False
+	keystocheck = ['id','screen_name','name','location','verified','friends_count','followers_count','description','created_at','statuses_count','listed_count','favourites_count','lang']
+	for key in keystocheck:
+		if key not in dictf['user']:
+			return False
+	return True
+
+def tryJsonError(string):
+	try:
+		return json.loads(string)
+	except:
+		return False
+
+def getDate(mstr):
+	try:
+		mdate = parse(mstr.strip())
+		return mdate
+	except Exception as inst:
+		return None
+
+def isInt(num):
+	try:
+		return int(round(float(num)))
+	except (RuntimeError, TypeError, NameError, ValueError):
+		return None
+
+
+def CreateTables():
+	global dbFile
+	conn = sqlite3.connect(dbFile)
+	c = conn.cursor()
+	c.execute("CREATE TABLE if not exists words(word TEXT, score INTEGER)")
+	c.execute("CREATE TABLE if not exists users(twitterid INTEGER, twitterhandle TEXT, name TEXT, location TEXT, verified BOOLEAN, following INTEGER, followers INTEGER, description TEXT, created_at DATETIME, status_count INTEGER, listed_count INTEGER, favorites_count INTEGER, UNIQUE(twitterid) ON CONFLICT REPLACE)")
+	c.execute("CREATE TABLE if not exists tweet(userid INTEGER, created_at DATETIME, `text` TEXT, retweet BOOLEAN, retweet_count INTEGER, twitterid INTEGER, place TEXT, inconversation BOOLEAN, followers INTEGER)")
+	c.execute("CREATE INDEX if not exists twitterid_tweet ON tweet(twitterid)")
+	
+	conn.commit()
+	c.close()
+	conn.close()
+	
+def ResetTables():
+	global dbFile
+	conn = sqlite3.connect(dbFile)
+	c = conn.cursor()
+	c.execute("DROP TABLE if exists words")
+	c.execute("DROP TABLE if exists users")
+	c.execute("DROP TABLE if exists tweet")
+	conn.commit()
+	c.close()
+	conn.close()
+	CreateTables()
+
+def RestWords():
+	global dbFile
+	conn = sqlite3.connect(dbFile)
+	c = conn.cursor()
+	c.execute("DROP TABLE if exists words")
+	conn.commit()
+	c.close()
+	conn.close()
+	CreateTables()
+
+
+def ReadLocations():
+	global dbFile
+	conn = sqlite3.connect(dbFile)
+	c = conn.cursor()
+	c.execute("SELECT created_at, place FROM tweet ORDER BY twitterid DESC LIMIT 100")
+	for row in c:
+		print str(row[0]) + ": " + row[1]
+	conn.commit()
+	c.close()
+	conn.close()
+	CreateTables()
+
+def ReadWords():
+	global dbFile
+	conn = sqlite3.connect(dbFile)
+	c = conn.cursor()
+	c.execute("SELECT DISTINCT word, score FROM words")
+	for row in c:
+		print row[0]
+	c.close()
+	conn.close()
+	
+def PrintTweets():
+	global dbFile
+	conn = sqlite3.connect(dbFile)
+	c = conn.cursor()
+	c.execute("SELECT created_at, `text` FROM tweet ORDER BY twitterid DESC LIMIT 100")
+	for row in c:
+		print str(row[0]) + ": " + row[1]
+	c.close()
+	conn.close()
+
+def PrintStatus():
+	global dbFile
+	conn = sqlite3.connect(dbFile)
+	c = conn.cursor()
+	c.execute("SELECT created_at FROM tweet ORDER BY twitterid DESC LIMIT 1")
+	for row in c:
+		print str(row[0])
+	c.close()
+	conn.close()
+	
+def PrintCountTweets():
+	global dbFile
+	conn = sqlite3.connect(dbFile)
+	c = conn.cursor()
+	c.execute("SELECT COUNT(*) AS c FROM tweet")
+	for row in c:
+		print str(row[0])
+	c.close()
+	conn.close()
+	
+def PrintCountUser():
+	global dbFile
+	conn = sqlite3.connect(dbFile)
+	c = conn.cursor()
+	c.execute("SELECT COUNT(*) AS c FROM users")
+	for row in c:
+		print str(row[0])
+	c.close()
+	conn.close()
+
+def PrintUser():
+	global dbFile
+	conn = sqlite3.connect(dbFile)
+	c = conn.cursor()
+	c.execute("SELECT twitterhandle, description FROM users LIMIT 100")
+	for row in c:
+		print str(row[0]) + ": " + row[1]
+	c.close()
+	conn.close()
+	
+
+def WordList():
+	wordl = []
+	global dbFile
+	conn = sqlite3.connect(dbFile)
+	c = conn.cursor()
+	c.execute("SELECT DISTINCT word FROM words")
+	for row in c:
+		wordl.append(row[0])
+	c.close()
+	conn.close()
+	return wordl
+
+	
+def ReadData(filename):
+	CreateTables()
+	global dbFile
+	conn = sqlite3.connect(dbFile)
+	c = conn.cursor()	
+	if os.path.isfile(os.path.abspath(os.path.expanduser(filename))) != False:
+		reader = csv.DictReader(open(os.path.abspath(os.path.expanduser(filename)), 'rU'))
+		for row in reader:
+			word = ''
+			cont = None
+			for name in row.keys():
+				if name.lower() == 'word' or name.lower() == 'name':
+					word = unicode(str(row.get(name,'')).strip().lower(), "utf8")
+				elif name.lower() == 'score' or name.lower() == 'cont':
+					cont = isInt(str(row.get(name,'')).strip())
+			if len(word)>0:
+				c.execute("INSERT INTO words(word, score) VALUES(?,?)",(word,cont))
+				conn.commit()
+	c.close()
+	conn.close()
+	
+
+class StdOutListener(StreamListener):
+	""" A listener handles tweets are the received from the stream. 
+	This is a basic listener that just prints received tweets to stdout.
+
+	"""
+	conn = ""
+	
+	def __init__(self):
+		global dbFile
+		self.conn = sqlite3.connect(dbFile)
+	
+	def write_tweet(self, userid, created_at, text, retweet, retweet_count, twitterid, place, inconversation, followers):
+		cur = self.conn.cursor()
+		
+		text = unicode(text)
+		
+		
+		try:
+			if "full_name" in place:
+				location = unicode(place['full_name'])
+			else:
+				location = ""
+		except (RuntimeError, TypeError, NameError, ValueError):
+			location = ""
+		
+		userid = isInt(userid)
+		twitterid = isInt(twitterid)
+		followers = isInt(followers)
+		created_at = getDate(created_at)
+		retweet_count = isInt(retweet_count)
+		text = text.strip()
+		
+		if retweet == None or retweet == False:
+			retweet = False
+		else:
+			retweet = True
+		
+		if inconversation == None or inconversation == False:
+			inconversation = False
+		else:
+			inconversation = True
+		
+		mylist = (userid, created_at, text, retweet, retweet_count,  location, twitterid, inconversation, followers)
+		
+		if userid != None and twitterid !=None and retweet_count != None and created_at !=None:
+			try:
+				cur.execute("INSERT INTO tweet(userid, created_at, `text`, retweet, retweet_count,  place, twitterid, inconversation, followers) VALUES(?,?,?,?,?,?,?,?,?)", mylist)
+				self.conn.commit()
+			except Exception as inst:
+				cur.close()
+				return False
+		
+		cur.close()
+		return True		
+	
+	def write_user(self, twitterid, twitterhandle, name, location, verified, following, followers, description, created_at, status_count, listed_count, favorites_count):
+		cur = self.conn.cursor()
+		
+		twitterhandle = unicode(twitterhandle)
+		name = unicode(name)
+		location = unicode(location)
+		description = unicode(description)
+		
+		twitterid = isInt(twitterid)
+		following = isInt(following)
+		followers = isInt(followers)
+		status_count = isInt(status_count)
+		listed_count = isInt(listed_count)
+		
+		created_at = getDate(created_at)
+		
+		if verified == None or verified == False:
+			verified = False
+		else:
+			verified = True
+		mylist = (twitterid,twitterhandle,name, location, verified, following, followers, description, created_at, status_count, listed_count, favorites_count)
+		if twitterid != None and following != None and followers != None and status_count != None and listed_count != None and created_at != None:
+			try:
+				cur.execute("insert or replace into users(twitterid,twitterhandle,name,location,verified,following,followers,description,created_at,status_count,listed_count,favorites_count) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",mylist)
+				self.conn.commit()
+			except Exception as inst:
+				cur.close()
+				return False
+		cur.close()
+		return True
+	
+	def on_data(self, data):
+		global stopStreamBool
+		jsondata = tryJsonError(data)
+		if jsondata != False:
+			if checkData(jsondata) == True:
+				if jsondata['user']['lang']=='en':
+					tweetstatus = self.write_tweet(jsondata['user']['id'], jsondata['created_at'], jsondata['text'], jsondata['retweeted'], jsondata['retweet_count'], jsondata['id'], jsondata['place'], jsondata['in_reply_to_status_id'],jsondata['user']['followers_count'])
+					userstatus = self.write_user(jsondata['user']['id'], jsondata['user']['screen_name'], jsondata['user']['name'], jsondata['user']['location'], jsondata['user']['verified'], jsondata['user']['friends_count'], jsondata['user']['followers_count'], jsondata['user']['description'], jsondata['user']['created_at'],jsondata['user']['statuses_count'],jsondata['user']['listed_count'],jsondata['user']['favourites_count'])
+					if tweetstatus == False or userstatus == False:
+						try:
+							logging.info(json.dumps(jsondata))
+						except Exception as inst:
+							tweetstatus = True
+							userstatus = True
+			else:
+				logging.info(json.dumps(jsondata))
+		else:
+			logging.info("Not JSON Data")
+		if stopStreamBool == True:
+			return False
+		return True
+
+	def on_error(self, status):
+		logging.info(status)
+		return True
+	
+#	def __del__(self):
+#		self.conn.close()
+
+	
+
+def main():
+	desc = 'Save Twitter Data'
+	p = optparse.OptionParser(description=desc)
+	p.add_option('--file', '-f', dest="file", help="Load file(s)", default='', metavar='"<File Path>"')
+	p.add_option('--dbfile', dest="dbfile", help="Set database file", default='', metavar='"<File Path>"')
+	p.add_option('--reset', '-r', action="store_true", dest="reset", help="Rest Words", default=False)
+	p.add_option('--resetall',action="store_true", dest="resetall", help="Rest all", default=False)
+	p.add_option('--printwords', dest="printwords", action="store_true", help="Print current words", default=False)
+	p.add_option('--printtweets', dest="printtweets", action="store_true", help="Print recent tweets", default=False)
+	p.add_option('--printusers', dest="printuser", action="store_true", help="Print recent users", default=False)
+	p.add_option('--run', dest="run", action="store_false", help="Start collecting data", default=True)
+	p.add_option('--key', dest="key", help="Set twitter key", default='', metavar='""')
+	p.add_option('--key_secret', dest="key_secret", help="Set twitter key secret", default='', metavar='""')
+	p.add_option('--token', dest="token", help="Set twitter token", default='', metavar='""')
+	p.add_option('--token_secret', dest="token_secret", help="Set twitter token secret", default='', metavar='""')
+	
+	
+	(options, arguments) = p.parse_args()
+
+	global consumer_key
+	global consumer_secret
+	global access_token
+	global access_token_secret
+	global config
+	global dbFile
+
+	if len(options.key.strip())>0:
+		consumer_key = options.key.strip();
+		config.set('twitter', 'consumer_key', consumer_key)
+	
+	if len(options.key_secret.strip())>0:
+		consumer_secret = options.key_secret.strip();
+		config.set('twitter', 'consumer_secret', consumer_secret)
+	
+	if len(options.token.strip())>0:
+		access_token = options.token.strip();
+		config.set('twitter', 'access_token', access_token)
+	
+	if len(options.token_secret.strip())>0:
+		access_token_secret = options.token_secret.strip();
+		config.set('twitter', 'access_token_secret', access_token_secret)
+	
+	if len(options.dbfile.strip())>0:
+		if isReturnFile(options.dbfile.strip()) != False:
+			dbFile = isReturnFile(options.dbfile.strip())
+			config.set('db', 'database_file', dbFile)
+	
+	global settingsFile
+	with open(settingsFile, 'wb') as configfile:
+	    config.write(configfile)
+	
+	CreateTables()
+	
+	if options.reset == True:
+		RestWords()
+	
+	if options.resetall == True:
+		ResetTables()
+		
+	if options.printtweets == True:
+		PrintTweets()
+	
+	if options.printuser == True:
+		PrintUser()
+	
+	if len(options.file.strip())>0:
+		filed = options.file.strip().split(',')
+		for mfile in filed:
+			mfile = mfile.strip()
+			if len(mfile)>0 and mfile != ",":
+				ReadData(mfile)
+	
+	if options.printwords == True:
+		ReadWords()
+	
+	if options.run == True:
+		sys.exit()
+
+class ThreadClass(threading.Thread):
+	
+	stream = ""
+	
+	def run(self):
+		global consumer_key
+		global consumer_secret
+		global access_token
+		global access_token_secret
+		
+		wordlist = WordList()
+		if len(wordlist)>0:
+			l = StdOutListener()
+			auth = OAuthHandler(consumer_key, consumer_secret)
+			auth.set_access_token(access_token, access_token_secret)
+			self.stream = Stream(auth, l)	
+			self.stream.filter(track=wordlist)
+		else:
+			print "No words to track"
+	def stop(self):
+		global stopStreamBool
+		stopStreamBool = True
+		
+class ConsoleClass():
+	colthread = ""
+	
+	def __init__(self, colthread):
+		print "You can do the following actions: "
+		print " * exit"
+		print " * count"
+		print " * countuser"
+		print " * print"
+		print " * printuser"
+		print " * status"
+		print " * locations"
+		self.colthread = colthread
+		self.askForAction()
+
+	def askForAction(self):
+		action = raw_input('>')
+		if action.lower().strip() =='exit':
+			self.colthread.stop()
+			sys.exit()
+		if action.lower().strip() == 'count':
+			PrintCountTweets()
+		if action.lower().strip() == 'countuser':
+			PrintCountUser()
+		if action.lower().strip() == 'print':
+			PrintTweets()
+			print ""
+			print "You can do the following actions: "
+			print " * exit"
+			print " * count"
+			print " * countuser"
+			print " * print"
+			print " * printuser"
+			print " * status"
+			print " * locations"
+		if action.lower().strip() == 'printuser':
+			PrintUser()
+			print ""
+			print "You can do the following actions: "
+			print " * exit"
+			print " * count"
+			print " * countuser"
+			print " * print"
+			print " * printuser"
+			print " * status"
+			print " * locations"
+		if action.lower().strip() == 'status':
+			PrintStatus()
+		if action.lower().strip() == 'locations':
+			ReadLocations()
+			print ""
+			print "You can do the following actions: "
+			print " * exit"
+			print " * count"
+			print " * countuser"
+			print " * print"
+			print " * printuser"
+			print " * status"
+			print " * locations"
+		if action.lower().strip() not in ('count','countuser','print','printuser','status','locations'):
+			print "Sorry, I didn't recognize that action"
+		self.askForAction()
+			
+		
+if __name__ == '__main__':
+	main()
+	wordlist = WordList()
+	if len(wordlist)==0:
+		print "No words to track"
+		sys.exit()
+	t = ThreadClass()
+	t.start()
+	ConsoleClass(t)
