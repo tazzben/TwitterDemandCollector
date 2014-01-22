@@ -16,6 +16,8 @@ import csv
 import pprint
 import threading
 import logging
+import time
+import random
 from ConfigParser import *
 
 config = ConfigParser()
@@ -443,14 +445,27 @@ class ThreadClass(threading.Thread):
 		global consumer_secret
 		global access_token
 		global access_token_secret
+		global stopStreamBool
 		
+		lasterror = datetime.datetime.now()
 		wordlist = WordList()
 		if len(wordlist)>0:
-			l = StdOutListener()
-			auth = OAuthHandler(consumer_key, consumer_secret)
-			auth.set_access_token(access_token, access_token_secret)
-			self.stream = Stream(auth, l)	
-			self.stream.filter(track=wordlist)
+			for n in range(0, 20):
+				if stopStreamBool != True:
+					try:
+						l = StdOutListener()
+						auth = OAuthHandler(consumer_key, consumer_secret)
+						auth.set_access_token(access_token, access_token_secret)
+						self.stream = Stream(auth, l)
+						self.stream.filter(track=wordlist)
+				 	except:
+						time.sleep((2 ** n) + (random.randint(0, 1000) / 1000))
+						cerror = datetime.datetime.now()
+						delta = cerror - lasterror
+						if delta.seconds>360:
+							n=0
+						lasterror = cerror
+						print "Connection reset encountered"
 		else:
 			print "No words to track"
 	def stop(self):
