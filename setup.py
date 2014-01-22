@@ -9,10 +9,10 @@ long_desc = """
 
 
 setup(name="TwitterDemandCollector",
-      version=1.0,
+      version=1.1,
       description="A collection tool for economists using the fact that twitter presents a demand curve for information",
       author="Ben Smith",
-      author_email="tazz_ben@ad.wsu.edu",
+      author_email="tazz_ben@wsu.edu",
       url="https://github.com/tazzben/TwitterDemandCollector",
       license="Public Domain",
       packages=[],
