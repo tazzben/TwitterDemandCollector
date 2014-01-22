@@ -450,7 +450,7 @@ class ThreadClass(threading.Thread):
 		lasterror = datetime.datetime.now()
 		wordlist = WordList()
 		if len(wordlist)>0:
-			for n in range(0, 20):
+			for n in range(0, 13):
 				if stopStreamBool != True:
 					try:
 						l = StdOutListener()
