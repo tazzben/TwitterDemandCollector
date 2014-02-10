@@ -465,7 +465,9 @@ class ThreadClass(threading.Thread):
 						if delta.seconds>360:
 							n=0
 						lasterror = cerror
-						print "Connection reset encountered"
+						logging.info("Connection reset encountered")
+						if n==13:
+							print "Attempts are reconnection failed"
 		else:
 			print "No words to track"
 	def stop(self):
